@@ -122,10 +122,6 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
             if running_strategy_record.status == "stopped":
                 print(f"Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped by user.")
                 break
-            if running_strategy_record.status == "paused":
-                print(f"Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) paused. Waiting...")
-                time.sleep(5) # Wait before checking status again
-                continue
 
             print(f"Fetching data for {symbol}{currency} at {datetime.now()}...")
             # Fetch latest data (e.g., last 2 days to ensure enough data for indicators)

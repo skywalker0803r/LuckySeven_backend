@@ -8,6 +8,7 @@ import sys
 import os
 import multiprocessing
 import subprocess # For running external scripts
+import psutil # For process management
 
 # Import custom modules
 from Datafetcher.binance_data_fetcher import get_crypto_prices, get_binance_trading_pairs
@@ -217,23 +218,13 @@ async def start_strategy(strategy_id: int, db: Session = Depends(get_db)):
         db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start strategy process: {e}")
 
-@app.post("/strategies/{strategy_id}/pause")
-async def pause_strategy(strategy_id: int, db: Session = Depends(get_db)):
-    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
-    if not running_strategy:
-        raise HTTPException(status_code=404, detail="Running strategy not found.")
-    if running_strategy.status == "running":
-        running_strategy.status = "paused"
-        db.commit()
-        return {"message": "Strategy paused successfully!"}
-    else:
-        raise HTTPException(status_code=400, detail=f"Strategy is not running (current status: {running_strategy.status}).")
-
 @app.post("/strategies/{strategy_id}/stop")
 async def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
     running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
     if not running_strategy:
-        raise HTTPException(status_code=404, detail="Running strategy not found.")
+        # If the running_strategy record is not found, it means the strategy is already stopped or was never running.
+        # In this case, we can consider the stop request successful.
+        return {"message": "Strategy is already stopped or was not running."}
 
     if running_strategy.status != "stopped":
         running_strategy.status = "stopped"
@@ -241,22 +232,33 @@ async def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
 
         if running_strategy.pid:
             try:
-                # Terminate the process
-                if sys.platform == "win32":
-                    # On Windows, taskkill is often more reliable for detached processes
-                    subprocess.run(["taskkill", "/F", "/PID", str(running_strategy.pid)], check=True)
-                else:
-                    os.kill(running_strategy.pid, 9) # SIGKILL
-                print(f"Process {running_strategy.pid} terminated.")
+                process = psutil.Process(running_strategy.pid)
+                # Terminate the process and its children
+                for proc in process.children(recursive=True):
+                    proc.terminate()
+                process.terminate() # Terminate the parent process
+                gone, alive = psutil.wait_procs(process.children() + [process], timeout=3)
+                if alive:
+                    for p in alive:
+                        p.kill() # Force kill if not terminated
+                print(f"Process {running_strategy.pid} and its children terminated.")
+            except psutil.NoSuchProcess:
+                print(f"Process {running_strategy.pid} not found, likely already terminated.")
             except Exception as e:
                 print(f"Error terminating process {running_strategy.pid}: {e}")
-                # Don't raise HTTPException here, just log the error
         
         db.delete(running_strategy)
-        db.commit()
+        try:
+            db.commit()
+            print(f"DEBUG: Running strategy record {running_strategy.id} deleted successfully.")
+        except Exception as e:
+            db.rollback()
+            print(f"ERROR: Failed to commit deletion of running strategy record {running_strategy.id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete running strategy record: {e}")
         return {"message": "Strategy stopped and removed successfully!"}
     else:
-        raise HTTPException(status_code=400, detail="Strategy is already stopped.")
+        # If status is already "stopped", return success.
+        return {"message": "Strategy is already stopped."}
 
 @app.get("/strategies/{strategy_id}/status")
 async def get_strategy_status(strategy_id: int, db: Session = Depends(get_db)):
