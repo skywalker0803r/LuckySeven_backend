@@ -8,7 +8,15 @@ import os
 
 # Import custom modules
 from Datafetcher.binance_data_fetcher import get_crypto_prices, get_binance_trading_pairs
+from Datafetcher.github_data_fetcher import get_github_commits # Import github_data_fetcher
 from Backtest.backtest import run_backtest
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
 
 app = FastAPI()
 
@@ -90,13 +98,34 @@ async def run_strategy_backtest(
     commission_rate = request.get("commission_rate", 0.001)
     slippage = request.get("slippage", 0.0005)
     risk_free_rate = request.get("risk_free_rate", 0.02)
+    github_owner = request.get("github_owner")
+    github_repo = request.get("github_repo")
+    strategy_name = request.get("strategy_name")
     try:
         # Fetch data
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
         if df.empty:
-            raise HTTPException(status_code=404, detail="No data found for the given parameters.")
+            raise HTTPException(status_code=404, detail="No crypto data found for the given parameters.")
+
+        # Handle GitHub commit data for commit_sma strategy
+        if strategy_name == "commit_sma" and github_owner and github_repo: # Check if strategy is commit_sma and owner/repo are provided
+            github_commits_df = get_github_commits(github_owner, github_repo, start_dt, end_dt, GITHUB_HEADERS)
+
+            if github_commits_df.empty:
+                raise HTTPException(status_code=404, detail="No GitHub commit data found for the given parameters. Please check owner/repo or date range.")
+            
+            # Aggregate commit count by day
+            github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
+            github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
+            github_commits_count.set_index('open_time', inplace=True)
+
+            # Merge crypto data with commit data
+            df = pd.merge(df, github_commits_count, left_index=True, right_index=True, how='left')
+            df['commit_count'] = df['commit_count'].fillna(0) # Fill NaN with 0 if no commits on a day
+            print("DEBUG: DataFrame columns after merging GitHub data:", df.columns)
+            print("DEBUG: DataFrame head after merging GitHub data:\n", df.head())
 
         # Dynamically load and execute strategy code
         # Create a temporary module to execute the strategy code
