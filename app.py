@@ -1,19 +1,99 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 import pandas as pd
 import importlib.util
 import sys
 import os
+import multiprocessing
+import subprocess # For running external scripts
 
 # Import custom modules
 from Datafetcher.binance_data_fetcher import get_crypto_prices, get_binance_trading_pairs
 from Datafetcher.github_data_fetcher import get_github_commits # Import github_data_fetcher
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB # For storing JSON data
+
 from Backtest.backtest import run_backtest
 
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
+
+DATABASE_URL = os.getenv("DatabaseURL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable not set. Please create a .env file with DATABASE_URL.")
+
+# SQLAlchemy Setup
+Base = declarative_base()
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Database Model for Saved Strategies
+class SavedStrategy(Base):
+    __tablename__ = "saved_strategies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    code = Column(Text, nullable=False)
+    symbol = Column(String)
+    currency = Column(String)
+    interval = Column(String)
+    initial_capital = Column(Float)
+    commission_rate = Column(Float)
+    slippage = Column(Float)
+    risk_free_rate = Column(Float)
+    github_owner = Column(String, nullable=True)
+    github_repo = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+# Database Model for Running Strategies
+class RunningStrategy(Base):
+    __tablename__ = "running_strategies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    strategy_id = Column(Integer, ForeignKey("saved_strategies.id"), unique=True)
+    pid = Column(Integer, nullable=True) # Process ID
+    status = Column(String, default="stopped") # running, paused, stopped
+    started_at = Column(DateTime, default=datetime.now)
+    last_updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+# Database Model for Trade Logs
+class TradeLog(Base):
+    __tablename__ = "trade_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    running_strategy_id = Column(Integer, ForeignKey("running_strategies.id"))
+    timestamp = Column(DateTime, default=datetime.now)
+    trade_type = Column(String) # "buy" or "sell"
+    price = Column(Float)
+    quantity = Column(Float)
+    commission = Column(Float)
+    profit_loss = Column(Float, nullable=True) # For sell trades
+
+# Database Model for Equity Curve
+class EquityCurve(Base):
+    __tablename__ = "equity_curves"
+
+    id = Column(Integer, primary_key=True, index=True)
+    running_strategy_id = Column(Integer, ForeignKey("running_strategies.id"))
+    timestamp = Column(DateTime, default=datetime.now)
+    equity = Column(Float)
+
+# Create tables if they don't exist
+Base.metadata.create_all(engine)
+
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
@@ -29,9 +109,179 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-async def read_root():
-    return {"message": "Welcome to LuckySeven Backend API"}
+@app.post("/strategies")
+async def save_strategy(request: dict, db: Session = Depends(get_db)):
+    strategy_name = request.get("name")
+    strategy_code = request.get("code")
+    symbol = request.get("symbol")
+    currency = request.get("currency")
+    interval = request.get("interval")
+    initial_capital = request.get("initial_capital")
+    commission_rate = request.get("commission_rate")
+    slippage = request.get("slippage")
+    risk_free_rate = request.get("risk_free_rate")
+    github_owner = request.get("github_owner")
+    github_repo = request.get("github_repo")
+
+    if not strategy_name or not strategy_code:
+        raise HTTPException(status_code=400, detail="Strategy name and code are required.")
+
+    # Check if strategy name already exists
+    existing_strategy = db.query(SavedStrategy).filter(SavedStrategy.name == strategy_name).first()
+    if existing_strategy:
+        raise HTTPException(status_code=409, detail="Strategy name already exists. Please choose a different name.")
+
+    new_strategy = SavedStrategy(
+        name=strategy_name,
+        code=strategy_code,
+        symbol=symbol,
+        currency=currency,
+        interval=interval,
+        initial_capital=initial_capital,
+        commission_rate=commission_rate,
+        slippage=slippage,
+        risk_free_rate=risk_free_rate,
+        github_owner=github_owner,
+        github_repo=github_repo
+    )
+    db.add(new_strategy)
+    db.commit()
+    db.refresh(new_strategy)
+    return {"message": "Strategy saved successfully!", "strategy_id": new_strategy.id}
+
+@app.get("/strategies")
+async def get_strategies(db: Session = Depends(get_db)):
+    strategies = db.query(SavedStrategy).all()
+    return strategies
+
+@app.delete("/strategies/{strategy_id}")
+async def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    strategy = db.query(SavedStrategy).filter(SavedStrategy.id == strategy_id).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found.")
+    db.delete(strategy)
+    db.commit()
+    return {"message": "Strategy deleted successfully!"}
+
+@app.post("/strategies/{strategy_id}/start")
+async def start_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    saved_strategy = db.query(SavedStrategy).filter(SavedStrategy.id == strategy_id).first()
+    if not saved_strategy:
+        raise HTTPException(status_code=404, detail="Saved strategy not found.")
+
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if running_strategy and running_strategy.status != "stopped":
+        raise HTTPException(status_code=400, detail=f"Strategy is already {running_strategy.status}.")
+
+    if not running_strategy:
+        running_strategy = RunningStrategy(strategy_id=strategy_id, status="starting")
+        db.add(running_strategy)
+        db.commit()
+        db.refresh(running_strategy)
+    else:
+        running_strategy.status = "starting"
+        running_strategy.started_at = datetime.now()
+        running_strategy.last_updated_at = datetime.now()
+        db.commit()
+
+    # Start the strategy in a new process
+    # We use subprocess.Popen to detach the process from the main FastAPI process
+    # This is a simplified approach. For production, consider a proper task queue (e.g., Celery)
+    try:
+        # Get the path to the Python executable in the current environment
+        python_executable = sys.executable
+        
+        # Construct the command to run strategy_runner.py
+        command = [
+            python_executable,
+            os.path.join(os.path.dirname(__file__), "strategy_runner.py"),
+            str(running_strategy.id),
+            str(saved_strategy.id)
+        ]
+        
+        # Start the subprocess
+        # Use creationflags for Windows to create a new console window (DETACHED_PROCESS)
+        # For Linux/macOS, it will run in the background by default
+        if sys.platform == "win32":
+            process = subprocess.Popen(command, creationflags=subprocess.DETACHED_PROCESS)
+        else:
+            process = subprocess.Popen(command, preexec_fn=os.setsid) # Detach for Unix-like systems
+
+        running_strategy.pid = process.pid
+        running_strategy.status = "running"
+        db.commit()
+        return {"message": "Strategy started successfully!", "running_strategy_id": running_strategy.id, "pid": process.pid}
+    except Exception as e:
+        db.rollback()
+        running_strategy.status = "error"
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Failed to start strategy process: {e}")
+
+@app.post("/strategies/{strategy_id}/pause")
+async def pause_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if not running_strategy:
+        raise HTTPException(status_code=404, detail="Running strategy not found.")
+    if running_strategy.status == "running":
+        running_strategy.status = "paused"
+        db.commit()
+        return {"message": "Strategy paused successfully!"}
+    else:
+        raise HTTPException(status_code=400, detail=f"Strategy is not running (current status: {running_strategy.status}).")
+
+@app.post("/strategies/{strategy_id}/stop")
+async def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if not running_strategy:
+        raise HTTPException(status_code=404, detail="Running strategy not found.")
+
+    if running_strategy.status != "stopped":
+        running_strategy.status = "stopped"
+        db.commit()
+
+        if running_strategy.pid:
+            try:
+                # Terminate the process
+                if sys.platform == "win32":
+                    # On Windows, taskkill is often more reliable for detached processes
+                    subprocess.run(["taskkill", "/F", "/PID", str(running_strategy.pid)], check=True)
+                else:
+                    os.kill(running_strategy.pid, 9) # SIGKILL
+                print(f"Process {running_strategy.pid} terminated.")
+            except Exception as e:
+                print(f"Error terminating process {running_strategy.pid}: {e}")
+                # Don't raise HTTPException here, just log the error
+        
+        db.delete(running_strategy)
+        db.commit()
+        return {"message": "Strategy stopped and removed successfully!"}
+    else:
+        raise HTTPException(status_code=400, detail="Strategy is already stopped.")
+
+@app.get("/strategies/{strategy_id}/status")
+async def get_strategy_status(strategy_id: int, db: Session = Depends(get_db)):
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if not running_strategy:
+        return {"status": "stopped"}
+    return {"status": running_strategy.status, "pid": running_strategy.pid, "started_at": running_strategy.started_at, "last_updated_at": running_strategy.last_updated_at}
+
+@app.get("/strategies/{strategy_id}/trade_logs")
+async def get_strategy_trade_logs(strategy_id: int, db: Session = Depends(get_db)):
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if not running_strategy:
+        raise HTTPException(status_code=404, detail="Running strategy not found.")
+    
+    trade_logs = db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).order_by(TradeLog.timestamp).all()
+    return trade_logs
+
+@app.get("/strategies/{strategy_id}/equity_curve")
+async def get_strategy_equity_curve(strategy_id: int, db: Session = Depends(get_db)):
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if not running_strategy:
+        raise HTTPException(status_code=404, detail="Running strategy not found.")
+
+    equity_curve = db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).order_by(EquityCurve.timestamp).all()
+    return equity_curve
 
 @app.get("/crypto_prices")
 async def get_prices(
