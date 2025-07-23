@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def add_rsi_signals(df, period=14, buy_threshold=30, sell_threshold=70):
+def generate_signal(df, period=14, buy_threshold=30, sell_threshold=70):
     df = df.copy()
     
     # 計算每日價格變化

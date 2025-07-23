@@ -1,4 +1,4 @@
-def add_commit_sma_signals(df,n1,n2):
+def generate_signal(df,n1,n2):
     df = df.copy()
     df['sma_1'] = df['commit_count'].rolling(window=n1).mean()
     df['sma_2'] = df['commit_count'].rolling(window=n2).mean()

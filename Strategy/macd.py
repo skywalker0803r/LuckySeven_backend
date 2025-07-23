@@ -1,6 +1,6 @@
 import pandas as pd
 
-def add_macd_signals(df, fast_period=12, slow_period=26, signal_period=9):
+def generate_signal(df, fast_period=12, slow_period=26, signal_period=9):
     df = df.copy()
     
     # 計算 EMA 12 和 EMA 26

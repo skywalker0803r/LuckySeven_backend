@@ -12,7 +12,7 @@ def hull_moving_average(series, period):
     hull = 2 * wma_half - wma_full
     return hull.rolling(window=sqrt_length).mean()
 
-def add_smartmoney_signals(df):
+def generate_signal(df):
     df = df.copy()
 
     # === Vegas Tunnels ===
