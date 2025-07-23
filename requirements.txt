@@ -3,3 +3,10 @@ python-binance
 sqlalchemy
 psycopg2-binary
 python-dotenv
+fastapi
+uvicorn
+psutil
+numpy
+matplotlib
+tqdm
+requests
