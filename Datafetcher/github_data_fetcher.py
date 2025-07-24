@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import JSONB # 使用 JSONB 可以更高效�
 load_dotenv()
 
 # 從環境變數中取得資料庫URL
-DATABASE_URL = os.getenv("DatabaseURL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set. Please create a .env file with DATABASE_URL.")
