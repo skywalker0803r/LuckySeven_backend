@@ -161,6 +161,36 @@ async def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
     strategy = db.query(SavedStrategy).filter(SavedStrategy.id == strategy_id).first()
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found.")
+    # Check if there's a running strategy associated with this saved strategy
+    running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
+    if running_strategy:
+        # If a running strategy exists, terminate its process first
+        if running_strategy.pid:
+            try:
+                process = psutil.Process(running_strategy.pid)
+                # Terminate the process and its children
+                for proc in process.children(recursive=True):
+                    proc.terminate()
+                process.terminate() # Terminate the parent process
+                gone, alive = psutil.wait_procs(process.children() + [process], timeout=3)
+                if alive:
+                    for p in alive:
+                        p.kill() # Force kill if not terminated
+                print(f"DEBUG: Process {running_strategy.pid} and its children terminated by delete_strategy.")
+            except psutil.NoSuchProcess:
+                print(f"DEBUG: Process {running_strategy.pid} not found, likely already terminated.")
+            except Exception as e:
+                print(f"ERROR: Error terminating process {running_strategy.pid} in delete_strategy: {e}")
+
+        # Then delete its associated trade logs and equity curves
+        db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).delete()
+        db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).delete()
+        db.commit() # Commit deletions of related records
+        # Then delete the running strategy itself
+        db.delete(running_strategy)
+        db.commit() # Commit the deletion of running_strategy before deleting saved_strategy
+        print(f"DEBUG: Associated running strategy {running_strategy.id} and its logs/curves deleted.")
+
     db.delete(strategy)
     db.commit()
     return {"message": "Strategy deleted successfully!"}
@@ -248,6 +278,11 @@ async def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
             except Exception as e:
                 print(f"Error terminating process {running_strategy.pid}: {e}")
         
+        # Delete associated trade logs and equity curves first
+        db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).delete()
+        db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).delete()
+        db.commit() # Commit deletions of related records
+
         db.delete(running_strategy)
         try:
             db.commit()

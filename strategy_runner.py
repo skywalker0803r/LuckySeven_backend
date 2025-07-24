@@ -97,20 +97,22 @@ def calculate_start_dt(end_dt, interval, lookback_periods=200):
 def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
     db = SessionLocal()
     try:
+        print(f"STRATEGY_RUNNER: Starting process for running_strategy_id={running_strategy_id}, saved_strategy_id={saved_strategy_id}")
         running_strategy_record = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
         if not running_strategy_record:
-            print(f"Error: Running strategy record {running_strategy_id} not found.")
+            print(f"STRATEGY_RUNNER ERROR: Running strategy record {running_strategy_id} not found.")
             return
 
         saved_strategy_record = db.query(SavedStrategy).filter(SavedStrategy.id == saved_strategy_id).first()
         if not saved_strategy_record:
-            print(f"Error: Saved strategy record {saved_strategy_id} not found.")
+            print(f"STRATEGY_RUNNER ERROR: Saved strategy record {saved_strategy_id} not found.")
             return
 
         # Update PID and status
         running_strategy_record.pid = os.getpid()
         running_strategy_record.status = "running"
         db.commit()
+        print(f"STRATEGY_RUNNER: Updated running_strategy {running_strategy_id} status to 'running' with PID {os.getpid()}")
 
         strategy_code = saved_strategy_record.code
         symbol = saved_strategy_record.symbol
@@ -129,7 +131,7 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
         exec(strategy_code, live_strategy_module.__dict__)
 
         if not hasattr(live_strategy_module, 'generate_signal'):
-            print("Error: Strategy code must contain a 'generate_signal' function.")
+            print("STRATEGY_RUNNER ERROR: Strategy code must contain a 'generate_signal' function.")
             running_strategy_record.status = "error"
             db.commit()
             return
@@ -145,31 +147,32 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
         while True:
             db.refresh(running_strategy_record) # Get latest status from DB
             if running_strategy_record.status == "stopped":
-                print(f"Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped by user.")
+                print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped by user. Exiting loop.")
                 break
 
-            print(f"Fetching data for {symbol}{currency} at {datetime.now()}...")
-            # Fetch latest data with dynamic start_dt based on interval
+            print(f"STRATEGY_RUNNER: Fetching data for {symbol}{currency} at {datetime.now()} for strategy {saved_strategy_record.name} (ID: {saved_strategy_id})...")
             end_dt = datetime.now()
             start_dt = calculate_start_dt(end_dt, interval, lookback_periods)
 
             df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
             if df.empty:
-                print("Warning: No crypto data fetched. Retrying in 60 seconds.")
+                print(f"STRATEGY_RUNNER WARNING: No crypto data fetched for {symbol}{currency}. Retrying in 60 seconds.")
                 time.sleep(60)
                 continue
+            print(f"STRATEGY_RUNNER: Successfully fetched {len(df)} crypto data points.")
 
             # Handle GitHub commit data if applicable
             if saved_strategy_record.name == "commit_sma" and github_owner and github_repo:
                 github_commits_df = get_github_commits(github_owner, github_repo, start_dt, end_dt, GITHUB_HEADERS)
                 if github_commits_df.empty:
-                    print("Warning: No GitHub commit data fetched. Strategy might not work as expected.")
+                    print("STRATEGY_RUNNER WARNING: No GitHub commit data fetched. Strategy might not work as expected.")
                 else:
                     github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
                     github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
                     github_commits_count.set_index('open_time', inplace=True)
                     df = pd.merge(df, github_commits_count, left_index=True, right_index=True, how='left')
                     df['commit_count'] = df['commit_count'].fillna(0)
+                    print(f"STRATEGY_RUNNER: Merged {len(github_commits_df)} GitHub commit data points.")
 
             # Generate signal
             df_with_signal = live_strategy_module.generate_signal(df.copy())
@@ -180,18 +183,17 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
 
             # Only process new signals
             if last_processed_time is None or latest_open_time > last_processed_time:
-                print(f"New signal at {latest_open_time}: {latest_signal}")
+                print(f"STRATEGY_RUNNER: New signal generated at {latest_open_time}: {latest_signal}")
                 # --- Simulate Trading (Replace with actual Binance API calls) ---
                 if latest_signal == 1: # Buy signal
                     if current_holding_shares == 0: # Only buy if not holding
                         buy_price = latest_close_price * (1 + slippage)
-                        # Simulate buying all available capital
                         shares_to_buy = (current_capital / (buy_price * (1 + commission_rate)))
                         if shares_to_buy > 0:
                             commission = shares_to_buy * buy_price * commission_rate
                             current_capital -= (shares_to_buy * buy_price + commission)
                             current_holding_shares += shares_to_buy
-                            print(f"BUY: {shares_to_buy:.4f} {symbol} at {buy_price:.2f}. Remaining capital: {current_capital:.2f}")
+                            print(f"STRATEGY_RUNNER BUY: {shares_to_buy:.4f} {symbol} at {buy_price:.2f}. Remaining capital: {current_capital:.2f}")
                             # Log trade
                             trade_log = TradeLog(
                                 running_strategy_id=running_strategy_id,
@@ -203,6 +205,7 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
                             )
                             db.add(trade_log)
                             db.commit()
+                            print(f"STRATEGY_RUNNER: Trade log (BUY) committed for running_strategy_id={running_strategy_id}.")
 
                 elif latest_signal == -1: # Sell signal
                     if current_holding_shares > 0: # Only sell if holding
@@ -210,7 +213,7 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
                         commission = current_holding_shares * sell_price * commission_rate
                         profit_loss = (current_holding_shares * sell_price - (initial_capital - current_capital)) - commission # Simplified P/L
                         current_capital += (current_holding_shares * sell_price - commission)
-                        print(f"SELL: {current_holding_shares:.4f} {symbol} at {sell_price:.2f}. Total capital: {current_capital:.2f}")
+                        print(f"STRATEGY_RUNNER SELL: {current_holding_shares:.4f} {symbol} at {sell_price:.2f}. Total capital: {current_capital:.2f}")
                         # Log trade
                         trade_log = TradeLog(
                             running_strategy_id=running_strategy_id,
@@ -223,6 +226,7 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
                         )
                         db.add(trade_log)
                         db.commit()
+                        print(f"STRATEGY_RUNNER: Trade log (SELL) committed for running_strategy_id={running_strategy_id}.")
                         current_holding_shares = 0 # Clear holding
 
                 # Update equity curve
@@ -234,13 +238,14 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
                 )
                 db.add(equity_record)
                 db.commit()
+                print(f"STRATEGY_RUNNER: Equity curve committed for running_strategy_id={running_strategy_id}. Equity: {current_equity:.2f}")
 
                 last_processed_time = latest_open_time
 
             time.sleep(60) # Check every 60 seconds (adjust based on interval)
 
     except Exception as e:
-        print(f"Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) encountered an error: {e}")
+        print(f"STRATEGY_RUNNER CRITICAL ERROR for strategy {saved_strategy_record.name} (ID: {saved_strategy_id}): {e}")
         import traceback
         traceback.print_exc()
         if running_strategy_record:
@@ -248,7 +253,7 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
             db.commit()
     finally:
         db.close()
-        print(f"Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) process finished.")
+        print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) process finished.")
 
 if __name__ == "__main__":
     # This part is for testing the runner directly
