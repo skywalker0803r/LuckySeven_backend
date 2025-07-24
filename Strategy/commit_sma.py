@@ -1,3 +1,5 @@
+REQUIRED_LOOKBACK_PERIODS = 50
+
 def generate_signal(df):
     n1 = 5
     n2 = 10

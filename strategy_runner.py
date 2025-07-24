@@ -72,6 +72,28 @@ class EquityCurve(Base):
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+def calculate_start_dt(end_dt, interval, lookback_periods=200):
+    if interval == '1m':
+        return end_dt - timedelta(minutes=lookback_periods)
+    elif interval == '3m':
+        return end_dt - timedelta(minutes=lookback_periods * 3)
+    elif interval == '5m':
+        return end_dt - timedelta(minutes=lookback_periods * 5)
+    elif interval == '15m':
+        return end_dt - timedelta(minutes=lookback_periods * 15)
+    elif interval == '30m':
+        return end_dt - timedelta(minutes=lookback_periods * 30)
+    elif interval == '1h':
+        return end_dt - timedelta(hours=lookback_periods)
+    elif interval == '4h':
+        return end_dt - timedelta(hours=lookback_periods * 4)
+    elif interval == '1d':
+        return end_dt - timedelta(days=lookback_periods)
+    else:
+        # Default to a safe large period if interval is unknown or very long
+        print(f"Warning: Unknown interval '{interval}'. Defaulting to 365 days lookback.")
+        return end_dt - timedelta(days=365) # 1 year of data
+
 def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
     db = SessionLocal()
     try:
@@ -112,6 +134,9 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
             db.commit()
             return
 
+        # Determine lookback periods based on strategy definition or default
+        lookback_periods = getattr(live_strategy_module, 'REQUIRED_LOOKBACK_PERIODS', 1000)
+
         # --- Live Trading Loop ---
         current_capital = initial_capital
         current_holding_shares = 0
@@ -124,9 +149,9 @@ def run_strategy_in_process(running_strategy_id: int, saved_strategy_id: int):
                 break
 
             print(f"Fetching data for {symbol}{currency} at {datetime.now()}...")
-            # Fetch latest data (e.g., last 2 days to ensure enough data for indicators)
+            # Fetch latest data with dynamic start_dt based on interval
             end_dt = datetime.now()
-            start_dt = end_dt - timedelta(days=2) # Adjust as needed for interval
+            start_dt = calculate_start_dt(end_dt, interval, lookback_periods)
 
             df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
             if df.empty:

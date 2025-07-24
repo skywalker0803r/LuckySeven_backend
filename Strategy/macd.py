@@ -1,3 +1,5 @@
+REQUIRED_LOOKBACK_PERIODS = 200
+
 import pandas as pd
 
 def generate_signal(df, fast_period=12, slow_period=26, signal_period=9):
