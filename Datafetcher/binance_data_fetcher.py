@@ -60,7 +60,8 @@ def get_binance_trading_pairs(top_n):
     try:
         # 把幣種跟交易量抓出來
         ticker_url = "https://api.binance.com/api/v3/ticker/24hr"
-        ticker_response = requests.get(ticker_url)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        ticker_response = requests.get(ticker_url,headers=headers)
         ticker_response.raise_for_status()
         ticker_data = ticker_response.json()
         volume_data = {item['symbol']: float(item['quoteVolume']) for item in ticker_data}
