@@ -13,6 +13,7 @@
 ## 技術棧
 
 *   **Web 框架**：FastAPI
+*   **ASGI 服務器**：Uvicorn
 *   **進程管理**：Python `multiprocessing` 模組
 *   **數據庫**：PostgreSQL (通過 SQLAlchemy ORM)
 *   **數據處理**：Pandas, NumPy
@@ -21,9 +22,13 @@
 
 ## 目錄結構
 
-*   `app.py`：FastAPI 應用程式的主入口點，定義了所有 API 端點。
+*   `app.py`：FastAPI 應用程式的主入口點，整合了各個路由模組。
 *   `config.py`：應用程式的通用配置，包括 GitHub 相關設定和預定義的加密貨幣列表。
 *   `database.py`：定義了所有數據庫模型 (SavedStrategy, RunningStrategy, TradeLog, EquityCurve, GithubCommitCache) 和數據庫連接設置。
+*   `routers/`：定義了 API 的路由，將不同的功能模組化。
+    *   `strategy_router.py`：處理策略相關的 API 端點，如保存、啟動、停止和查詢策略狀態。
+    *   `data_router.py`：處理數據相關的 API 端點，如獲取加密貨幣價格和交易對。
+    *   `misc_router.py`：處理其他雜項 API 端點，如獲取策略列表和策略代碼。
 *   `Datafetcher/`：包含用於從外部來源（如幣安和 GitHub）獲取數據的模組。
     *   `binance_data_fetcher.py`：負責從幣安 API 獲取 K 線數據和交易對。
     *   `github_data_fetcher.py`：負責從 GitHub API 獲取專案提交數據。
