@@ -4,73 +4,24 @@ from datetime import datetime, timedelta
 import importlib.util
 import os
 import sys
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
 
 # Import custom modules
 from Datafetcher.binance_data_fetcher import get_crypto_prices
 from Datafetcher.github_data_fetcher import get_github_commits
 
+# Import database components
+from database import SessionLocal, SavedStrategy, RunningStrategy, TradeLog, EquityCurve
+
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# DATABASE_URL is now loaded in database.py
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 GITHUB_HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
-
-# SQLAlchemy Setup (re-use models from app.py for consistency)
-Base = declarative_base()
-
-class SavedStrategy(Base):
-    __tablename__ = "saved_strategies"
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    code = Column(Text)
-    symbol = Column(String)
-    currency = Column(String)
-    interval = Column(String)
-    initial_capital = Column(Float)
-    commission_rate = Column(Float)
-    slippage = Column(Float)
-    risk_free_rate = Column(Float)
-    github_owner = Column(String, nullable=True)
-    github_repo = Column(String, nullable=True)
-
-class RunningStrategy(Base):
-    __tablename__ = "running_strategies"
-    id = Column(Integer, primary_key=True)
-    strategy_id = Column(Integer, ForeignKey("saved_strategies.id"))
-    pid = Column(Integer)
-    status = Column(String)
-    started_at = Column(DateTime)
-    last_updated_at = Column(DateTime)
-
-class TradeLog(Base):
-    __tablename__ = "trade_logs"
-    id = Column(Integer, primary_key=True)
-    running_strategy_id = Column(Integer, ForeignKey("running_strategies.id"))
-    timestamp = Column(DateTime)
-    trade_type = Column(String) # "buy" or "sell"
-    price = Column(Float)
-    quantity = Column(Float)
-    commission = Column(Float)
-    profit_loss = Column(Float, nullable=True)
-
-class EquityCurve(Base):
-    __tablename__ = "equity_curves"
-    id = Column(Integer, primary_key=True)
-    running_strategy_id = Column(Integer, ForeignKey("running_strategies.id"))
-    timestamp = Column(DateTime)
-    equity = Column(Float)
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def calculate_start_dt(end_dt, interval, lookback_periods=200):
     if interval == '1m':

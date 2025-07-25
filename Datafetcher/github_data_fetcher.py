@@ -5,35 +5,33 @@ import time
 import json
 import os
 from dotenv import load_dotenv # 導入 load_dotenv
-from sqlalchemy import create_engine, Column, String, Text, DateTime, JSON
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.dialects.postgresql import JSONB # 使用 JSONB 可以更高效存儲JSON數據
+
+# Import database components
+from database import SessionLocal, GithubCommitCache
 
 # 載入 .env 檔案中的環境變數
 load_dotenv()
 
-# 從環境變數中取得資料庫URL
-DATABASE_URL = os.getenv("DATABASE_URL")
+# 從環境變數中取得資料庫URL (DATABASE_URL is now loaded in database.py)
+# DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable not set. Please create a .env file with DATABASE_URL.")
+# if not DATABASE_URL:
+#     raise ValueError("DATABASE_URL environment variable not set. Please create a .env file with DATABASE_URL.")
 
-# SQLAlchemy 設定
-Base = declarative_base()
+# SQLAlchemy 設定 (now in database.py)
+# Base = declarative_base()
+# class GithubCommitCache(Base):
+#     __tablename__ = 'github_commit_cache'
+#     id = Column(String, primary_key=True) # owner/repo
+#     repo_data = Column(JSONB, nullable=False) # 存放該 repo 的所有 commit cache
 
-class GithubCommitCache(Base):
-    __tablename__ = 'github_commit_cache'
-    id = Column(String, primary_key=True) # owner/repo
-    repo_data = Column(JSONB, nullable=False) # 存放該 repo 的所有 commit cache
+#     def __repr__(self):
+#         return f"<GithubCommitCache(id='{self.id}')>"
 
-    def __repr__(self):
-        return f"<GithubCommitCache(id='{self.id}')>"
-
-# 初始化資料庫引擎和會話
-engine = create_engine(DATABASE_URL)
-Base.metadata.create_all(engine) # 建立資料表 (如果不存在)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# 初始化資料庫引擎和會話 (now in database.py)
+# engine = create_engine(DATABASE_URL)
+# Base.metadata.create_all(engine) # 建立資料表 (如果不存在)
+# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # 快取函數
