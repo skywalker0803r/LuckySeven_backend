@@ -12,7 +12,7 @@ import importlib.util
 import os
 import pandas as pd
 import traceback
-
+from fastapi import HTTPException
 from database import SessionLocal, SavedStrategy, RunningStrategy, TradeLog, EquityCurve
 from services.data_service import DataService
 from exceptions import (
