@@ -1,9 +1,3 @@
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
@@ -24,34 +18,34 @@ class DataService:
                 "interval": interval,
                 "limit": data_limit  # Use the provided data_limit for Binance API
             }
-            logger.debug(f"Fetching latest {data_limit} {full_symbol} klines from Binance API. URL: {url}, Params: {params}")
+            print(f"DEBUG: Fetching latest {data_limit} {full_symbol} klines from Binance API. URL: {url}, Params: {params}")
             try:
                 response = requests.get(url, params=params)
-                logger.debug(f"Binance API Response Status Code: {response.status_code}")
+                print(f"DEBUG: Binance API Response Status Code: {response.status_code}")
                 if 'x-mbx-used-weight' in response.headers:
-                    logger.debug(f"Binance API Used Weight: {response.headers['x-mbx-used-weight']}")
+                    print(f"DEBUG: Binance API Used Weight: {response.headers['x-mbx-used-weight']}")
                 if 'x-mbx-used-weight-1m' in response.headers:
-                    logger.debug(f"Binance API Used Weight (1m): {response.headers['x-mbx-used-weight-1m']}")
+                    print(f"DEBUG: Binance API Used Weight (1m): {response.headers['x-mbx-used-weight-1m']}")
                 response.raise_for_status()
                 klines = response.json()
                 all_klines.extend(klines)
-                logger.debug(f"Received {len(klines)} klines from Binance API for data_limit request.")
+                print(f"DEBUG: Received {len(klines)} klines from Binance API for data_limit request.")
             except requests.exceptions.HTTPError as e:
-                logger.error(f"HTTP error occurred while fetching {full_symbol} price with data_limit: {e}")
+                print(f"ERROR: HTTP error occurred while fetching {full_symbol} price with data_limit: {e}")
                 if 'response' in locals():
-                    logger.error(f"Binance API Response Status Code: {response.status_code}")
-                    logger.error(f"Binance API Response Content: {response.text}")
+                    print(f"ERROR: Binance API Response Status Code: {response.status_code}")
+                    print(f"ERROR: Binance API Response Content: {response.text}")
                 return pd.Series(dtype='float64')
             except requests.exceptions.RequestException as e:
-                logger.error(f"Failed to connect to Binance API with data_limit: {e}")
+                print(f"ERROR: Failed to connect to Binance API with data_limit: {e}")
                 return pd.Series(dtype='float64')
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode JSON response from Binance API with data_limit: {e}")
+                print(f"ERROR: Failed to decode JSON response from Binance API with data_limit: {e}")
                 if 'response' in locals():
-                    logger.error(f"Raw response content: {response.text}")
+                    print(f"ERROR: Raw response content: {response.text}")
                 return pd.Series(dtype='float64')
             except Exception as e:
-                logger.error(f"An unknown error occurred while fetching {full_symbol} price with data_limit: {e}", exc_info=True)
+                print(f"ERROR: An unknown error occurred while fetching {full_symbol} price with data_limit: {e}")
                 return pd.Series(dtype='float64')
         else:
             # Original logic for fetching data between start_date and end_date
@@ -69,55 +63,55 @@ class DataService:
                 "limit": 1000  # Max 1000 data points per request
             }
 
-            logger.debug(f"Fetching {full_symbol} from Binance API. URL: {url}, Params: {params}")
+            print(f"DEBUG: Fetching {full_symbol} from Binance API. URL: {url}, Params: {params}")
 
             while True:
                 try:
-                    logger.debug(f"Requesting data from {datetime.fromtimestamp(params['startTime']/1000)} to {datetime.fromtimestamp(params['endTime']/1000)}")
+                    print(f"DEBUG: Requesting data from {datetime.fromtimestamp(params['startTime']/1000)} to {datetime.fromtimestamp(params['endTime']/1000)}")
                     response = requests.get(url, params=params)
-                    logger.debug(f"Binance API Response Status Code: {response.status_code}")
+                    print(f"DEBUG: Binance API Response Status Code: {response.status_code}")
                     
                     # Check for rate limit headers
                     if 'x-mbx-used-weight' in response.headers:
-                        logger.debug(f"Binance API Used Weight: {response.headers['x-mbx-used-weight']}")
+                        print(f"DEBUG: Binance API Used Weight: {response.headers['x-mbx-used-weight']}")
                     if 'x-mbx-used-weight-1m' in response.headers:
-                        logger.debug(f"Binance API Used Weight (1m): {response.headers['x-mbx-used-weight-1m']}")
+                        print(f"DEBUG: Binance API Used Weight (1m): {response.headers['x-mbx-used-weight-1m']}")
 
                     response.raise_for_status()  # 檢查 HTTP 請求是否成功
                     klines = response.json()
-                    logger.debug(f"Received {len(klines)} klines from Binance API.")
+                    print(f"DEBUG: Received {len(klines)} klines from Binance API.")
 
                     if not klines:
-                        logger.debug("No more data from Binance API.")
+                        print("DEBUG: No more data from Binance API.")
                         break  # 沒有更多數據
                     
                     all_klines.extend(klines)
 
                     if len(klines) < params["limit"]:
-                        logger.debug("Reached end of data for this request.")
+                        print("DEBUG: Reached end of data for this request.")
                         break
                     params["startTime"] = klines[-1][6] + 1 # Modified: Use close_time + 1
                     time.sleep(0.1)  # Be kind to the API
                 except requests.exceptions.HTTPError as e:
-                    logger.error(f"HTTP error occurred while fetching {full_symbol} price: {e}")
+                    print(f"ERROR: HTTP error occurred while fetching {full_symbol} price: {e}")
                     if 'response' in locals():
-                        logger.error(f"Binance API Response Status Code: {response.status_code}")
-                        logger.error(f"Binance API Response Content: {response.text}")
+                        print(f"ERROR: Binance API Response Status Code: {response.status_code}")
+                        print(f"ERROR: Binance API Response Content: {response.text}")
                     return pd.Series(dtype='float64')
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"Failed to connect to Binance API: {e}")
+                    print(f"ERROR: Failed to connect to Binance API: {e}")
                     return pd.Series(dtype='float64')
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to decode JSON response from Binance API: {e}")
+                    print(f"ERROR: Failed to decode JSON response from Binance API: {e}")
                     if 'response' in locals():
-                        logger.error(f"Raw response content: {response.text}")
+                        print(f"ERROR: Raw response content: {response.text}")
                     return pd.Series(dtype='float64')
                 except Exception as e:
-                    logger.error(f"An unknown error occurred while fetching {full_symbol} price: {e}", exc_info=True)
+                    print(f"ERROR: An unknown error occurred while fetching {full_symbol} price: {e}")
                     return pd.Series(dtype='float64')
         
         if not all_klines:
-            logger.warning(f"No price data fetched for {full_symbol} from Binance. Check symbol, interval or date range.")
+            print(f"Warning: No price data fetched for {full_symbol} from Binance. Check symbol, interval or date range.")
             return pd.Series(dtype='float64')
         
         df = pd.DataFrame(all_klines, columns=[
@@ -145,16 +139,16 @@ class DataService:
             ticker_url = "https://api.binance.com/api/v3/ticker/24hr"
             headers = {'User-Agent': 'Mozilla/5.0'}
             
-            logger.debug(f"Fetching trading pairs from Binance API. URL: {ticker_url}")
+            print(f"DEBUG: Fetching trading pairs from Binance API. URL: {ticker_url}")
             ticker_response = requests.get(ticker_url,headers=headers)
-            logger.debug(f"Binance API Trading Pairs Response Status Code: {ticker_response.status_code}")
+            print(f"DEBUG: Binance API Trading Pairs Response Status Code: {ticker_response.status_code}")
             
             if 'x-mbx-used-weight' in ticker_response.headers:
-                logger.debug(f"Binance API Used Weight (Trading Pairs): {ticker_response.headers['x-mbx-used-weight']}")
+                print(f"DEBUG: Binance API Used Weight (Trading Pairs): {ticker_response.headers['x-mbx-used-weight']}")
 
             ticker_response.raise_for_status()
             ticker_data = ticker_response.json()
-            logger.debug(f"Received {len(ticker_data)} trading pairs from Binance API.")
+            print(f"DEBUG: Received {len(ticker_data)} trading pairs from Binance API.")
 
             volume_data = {item['symbol']: float(item['quoteVolume']) for item in ticker_data}
 
@@ -177,22 +171,22 @@ class DataService:
         
         except requests.exceptions.RequestException as e:
             error_message = f"Error: Failed to fetch Binance trading pairs: {e}"
-            logger.error(error_message)
+            print(error_message)
             if 'ticker_response' in locals():
-                logger.error(f"Binance API Trading Pairs Response Status Code: {ticker_response.status_code}")
-                logger.error(f"Binance API Trading Pairs Response Content: {ticker_response.text}")
+                print(f"ERROR: Binance API Trading Pairs Response Status Code: {ticker_response.status_code}")
+                print(f"ERROR: Binance API Trading Pairs Response Content: {ticker_response.text}")
             return []
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response from Binance API (Trading Pairs): {e}")
+            print(f"ERROR: Failed to decode JSON response from Binance API (Trading Pairs): {e}")
             if 'ticker_response' in locals():
-                logger.error(f"Raw response content (Trading Pairs): {ticker_response.text}")
+                print(f"ERROR: Raw response content (Trading Pairs): {ticker_response.text}")
             return []
         except Exception as e:
-            logger.error(f"An unknown error occurred while fetching trading pairs: {e}", exc_info=True)
+            print(f"ERROR: An unknown error occurred while fetching trading pairs: {e}")
             return []
 
     def get_github_commits(self, owner, repo, start_date, end_date, headers):
-        logger.info(f"--- Starting to fetch GitHub Commit data for {owner}/{repo} ---")
+        print(f"\n--- Starting to fetch GitHub Commit data for {owner}/{repo} ---")
 
         all_commits_for_range = []
                 
@@ -209,15 +203,15 @@ class DataService:
         try:
             while True:
                 url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page={per_page}&page={page}&since={since_date_str}&until={until_date_str}"
-                logger.debug(f"GitHub API: Request URL: {url}")
+                print(f"DEBUG(GitHub API): Request URL: {url}")
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
 
                 commits = response.json()
-                logger.debug(f"GitHub API: Received {len(commits)} commits for page {page}.")
+                print(f"DEBUG(GitHub API): Received {len(commits)} commits for page {page}.")
 
                 if not commits:
-                    logger.debug(f"GitHub API: No more commits found for page {page}, breaking loop.")
+                    print(f"DEBUG(GitHub API): No more commits found for page {page}, breaking loop.")
                     break
 
                 for commit in commits:
@@ -239,27 +233,27 @@ class DataService:
                 time.sleep(0.1) # Be kind to the API
 
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error occurred while fetching GitHub Commits: {e} (Status code: {response.status_code if 'response' in locals() else 'N/A'})")
+            print(f"Error: HTTP error occurred while fetching GitHub Commits: {e} (Status code: {response.status_code if 'response' in locals() else 'N/A'})")
             if 'response' in locals() and response.status_code == 404:
-                logger.warning("Please check if GitHub Owner and Repository names are correct.")
+                print("Please check if GitHub Owner and Repository names are correct.")
             elif 'response' in locals() and response.status_code == 403:
-                logger.warning(f"GitHub API rate limit might have been reached (Status code: {response.status_code}). Consider setting GITHUB_TOKEN.")
+                print(f"GitHub API rate limit might have been reached (Status code: {response.status_code}). Consider setting GITHUB_TOKEN.")
             # For now, return empty DataFrame on error for missing data
             return pd.DataFrame(columns=['date', 'message'])
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to connect to GitHub API: {e}")
+            print(f"Error: Failed to connect to GitHub API: {e}")
             return pd.DataFrame(columns=['date', 'message'])
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response from GitHub API: {e}")
+            print(f"ERROR: Failed to decode JSON response from GitHub API: {e}")
             if 'response' in locals():
-                logger.error(f"Raw response content: {response.text}")
+                print(f"ERROR: Raw response content: {response.text}")
             return pd.DataFrame(columns=['date', 'message'])
         except Exception as e:
-            logger.error(f"An unknown error occurred while fetching GitHub Commits: {e}", exc_info=True)
+            print(f"ERROR: An unknown error occurred while fetching GitHub Commits: {e}")
             return pd.DataFrame(columns=['date', 'message'])
 
         if not all_commits_for_range:
-            logger.warning(f"No Commit data found for {owner}/{repo} within the specified date range ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}).")
+            print(f"Warning: No Commit data found for {owner}/{repo} within the specified date range ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}).")
             df = pd.DataFrame(columns=['date', 'message'])
         else:
             df = pd.DataFrame(all_commits_for_range)
@@ -267,7 +261,7 @@ class DataService:
             # Filter to ensure strict adherence to requested start_date and end_date
             df = df[(df['date'] >= start_date.replace(hour=0, minute=0, second=0, microsecond=0)) &
                     (df['date'] <= end_date.replace(hour=0, minute=0, second=0, microsecond=0))]
-            logger.info(f"Successfully consolidated {len(df)} GitHub Commit data points for the requested range.")
+            print(f"Successfully consolidated {len(df)} GitHub Commit data points for the requested range.")
 
         return df
 

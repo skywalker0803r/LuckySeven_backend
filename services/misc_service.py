@@ -1,9 +1,3 @@
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 from fastapi import HTTPException
 import os
 import importlib.util
@@ -18,20 +12,6 @@ from exceptions import DataNotFoundException, InvalidDateFormatException, Missin
 class MiscService:
     def __init__(self):
         self.data_service = DataService()
-
-    def _parse_date(self, date_str: str) -> datetime:
-        """Attempts to parse a date string from various formats."""
-        formats = [
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d"
-        ]
-        for fmt in formats:
-            try:
-                return datetime.strptime(date_str, fmt)
-            except ValueError:
-                continue
-        raise ValueError(f"Date string '{date_str}' does not match any expected format.")
 
     def get_strategy_list(self):
         strategy_dir = "Strategy"
@@ -66,8 +46,15 @@ class MiscService:
         github_repo: str | None
     ):
         try:
-            start_dt = self._parse_date(start_date_str)
-            end_dt = self._parse_date(end_date_str)
+            try:
+                start_dt = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                raise InvalidDateFormatException(detail=f"Invalid start_date format: {start_date_str}. Please use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS.")
+
+            try:
+                end_dt = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                raise InvalidDateFormatException(detail=f"Invalid end_date format: {end_date_str}. Please use YYYY-MM-DD or YYYY-MM-DD HH:MM:S.")
 
             df = self.data_service.get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
             if df.empty:
@@ -76,7 +63,7 @@ class MiscService:
             if strategy_name == "commit_sma" and github_owner and github_repo:
                 github_commits_df = self.data_service.get_github_commits(github_owner, github_repo, start_dt, end_dt, {})
                 if github_commits_df.empty:
-                    logger.warning("No GitHub commit data found for commit_sma strategy.")
+                    print("WARNING: No GitHub commit data found for commit_sma strategy.")
                 else:
                     github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
                     github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
@@ -109,7 +96,8 @@ class MiscService:
         except HTTPException as e:
             raise e
         except Exception as e:
-            logger.error(f"An unexpected error occurred during backtest: {e}", exc_info=True)
+            import traceback
+            traceback.print_exc()
             raise BacktestFailedException(detail=f"Backtest failed: {e}")
 
 misc_service = MiscService()

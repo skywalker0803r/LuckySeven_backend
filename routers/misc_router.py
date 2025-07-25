@@ -1,5 +1,4 @@
 from fastapi import APIRouter, HTTPException
-import logging
 
 from services.misc_service import MiscService
 
@@ -7,23 +6,13 @@ router = APIRouter()
 
 misc_service = MiscService()
 
-logger = logging.getLogger(__name__)
-
 @router.get("/strategy_list")
 async def get_strategy_list():
-    try:
-        return misc_service.get_strategy_list()
-    except Exception as e:
-        logger.error(f"An error occurred in get_strategy_list: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+    return misc_service.get_strategy_list()
 
 @router.get("/strategy_code/{strategy_name}")
 async def get_strategy_code(strategy_name: str):
-    try:
-        return misc_service.get_strategy_code(strategy_name)
-    except Exception as e:
-        logger.error(f"An error occurred in get_strategy_code: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+    return misc_service.get_strategy_code(strategy_name)
 
 @router.post("/run_backtest")
 async def run_backtest(
@@ -43,11 +32,7 @@ async def run_backtest(
     github_owner = request.get("github_owner")
     github_repo = request.get("github_repo")
 
-    try:
-        return misc_service.run_backtest(
-            symbol, currency, interval, start_date_str, end_date_str, strategy_code, strategy_name,
-            initial_capital, commission_rate, slippage, risk_free_rate, github_owner, github_repo
-        )
-    except Exception as e:
-        logger.error(f"An error occurred in run_backtest: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+    return misc_service.run_backtest(
+        symbol, currency, interval, start_date_str, end_date_str, strategy_code, strategy_name,
+        initial_capital, commission_rate, slippage, risk_free_rate, github_owner, github_repo
+    )
