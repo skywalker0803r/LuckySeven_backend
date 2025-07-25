@@ -182,6 +182,9 @@ def run_backtest(df: pd.DataFrame, initial_capital: float, commission_rate: floa
     average_holding_period = np.mean([t['holding_period'] for t in detailed_trades]) if detailed_trades else 0
 
 
+    # Added: Number of K-bars
+    num_k_bars = len(df)
+
     results = {
         
         # 指標
@@ -199,6 +202,7 @@ def run_backtest(df: pd.DataFrame, initial_capital: float, commission_rate: floa
         "最大單筆獲利": f"${max_single_profit:,.2f}",
         "最大單筆虧損": f"${max_single_loss:,.2f}",
         "單純買進持有策略的總報酬率": f"{buy_and_hold_return:.2%}",
+        "回測K棒數量": num_k_bars, # Added this line
         },
         
         # 圖表

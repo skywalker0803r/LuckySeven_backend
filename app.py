@@ -6,9 +6,8 @@ import pandas as pd
 import importlib.util
 import sys
 import os
-import multiprocessing
-import subprocess # For running external scripts
-import psutil # For process management
+import multiprocessing # Added for process management
+import time
 
 # Import custom modules
 from Datafetcher.binance_data_fetcher import get_crypto_prices, get_binance_trading_pairs
@@ -21,15 +20,6 @@ from database import SessionLocal, SavedStrategy, RunningStrategy, TradeLog, Equ
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
-
-# DATABASE_URL is now loaded in database.py
-# if not DATABASE_URL:
-#     raise ValueError("DATABASE_URL environment variable not set. Please create a .env file with DATABASE_URL.")
-
-# Base, engine, SessionLocal, and models are now in database.py
-# Base.metadata.create_all(engine) is now in database.py
-
-# Dependency to get DB session is now in database.py
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_HEADERS = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
@@ -45,6 +35,186 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# Dictionary to store running strategy processes
+running_strategy_processes = {}
+
+# Helper function to run live strategy in a separate process
+def _run_live_strategy_process(running_strategy_id: int, saved_strategy_id: int):
+    db = SessionLocal()
+    try:
+        running_strategy_record = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
+        if not running_strategy_record:
+            print(f"STRATEGY_RUNNER ERROR: Running strategy record {running_strategy_id} not found.")
+            return
+
+        saved_strategy_record = db.query(SavedStrategy).filter(SavedStrategy.id == saved_strategy_id).first()
+        if not saved_strategy_record:
+            print(f"STRATEGY_RUNNER ERROR: Saved strategy record {saved_strategy_id} not found.")
+            return
+
+        running_strategy_record.pid = os.getpid()
+        running_strategy_record.status = "running"
+        db.commit()
+        print(f"STRATEGY_RUNNER: Updated running_strategy {running_strategy_id} status to 'running' with PID {os.getpid()}")
+
+        strategy_code = saved_strategy_record.code
+        symbol = saved_strategy_record.symbol
+        currency = saved_strategy_record.currency
+        interval = saved_strategy_record.interval
+        initial_capital = saved_strategy_record.initial_capital
+        commission_rate = saved_strategy_record.commission_rate
+        slippage = saved_strategy_record.slippage
+        risk_free_rate = saved_strategy_record.risk_free_rate
+        github_owner = saved_strategy_record.github_owner
+        github_repo = saved_strategy_record.github_repo
+
+        spec = importlib.util.spec_from_loader("live_strategy_module", loader=None)
+        live_strategy_module = importlib.util.module_from_spec(spec)
+        exec(strategy_code, live_strategy_module.__dict__)
+
+        if not hasattr(live_strategy_module, 'generate_signal'):
+            print("STRATEGY_RUNNER ERROR: Strategy code must contain a 'generate_signal' function.")
+            running_strategy_record.status = "error"
+            db.commit()
+            return
+
+        lookback_periods = getattr(live_strategy_module, 'REQUIRED_LOOKBACK_PERIODS', 100)
+
+        current_capital = initial_capital
+        current_holding_shares = 0
+        last_processed_time = None
+
+        def calculate_start_dt(end_dt, interval, lookback_periods=200):
+            if interval == '1m':
+                return end_dt - timedelta(minutes=lookback_periods)
+            elif interval == '3m':
+                return end_dt - timedelta(minutes=lookback_periods * 3)
+            elif interval == '5m':
+                return end_dt - timedelta(minutes=lookback_periods * 5)
+            elif interval == '15m':
+                return end_dt - timedelta(minutes=lookback_periods * 15)
+            elif interval == '30m':
+                return end_dt - timedelta(minutes=lookback_periods * 30)
+            elif interval == '1h':
+                return end_dt - timedelta(hours=lookback_periods)
+            elif interval == '4h':
+                return end_dt - timedelta(hours=lookback_periods * 4)
+            elif interval == '1d':
+                return end_dt - timedelta(days=lookback_periods)
+            else:
+                print(f"Warning: Unknown interval '{interval}'. Defaulting to 365 days lookback.")
+                return end_dt - timedelta(days=365)
+
+        while True:
+            # Re-fetch the running strategy record in each iteration to get the latest status
+            current_running_strategy = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
+
+            if not current_running_strategy or current_running_strategy.status == "stopped":
+                print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped or deleted. Exiting loop.")
+                break
+
+            # Update the local running_strategy_record reference
+            running_strategy_record = current_running_strategy
+
+            print(f"STRATEGY_RUNNER: Fetching data for {symbol}{currency} at {datetime.now()} for strategy {saved_strategy_record.name} (ID: {saved_strategy_id})...")
+            end_dt = datetime.now()
+            start_dt = calculate_start_dt(end_dt, interval, lookback_periods)
+            print(f"STRATEGY_RUNNER DEBUG: Strategy calculation data range: start_dt={start_dt}, end_dt={end_dt}, lookback_periods={lookback_periods}")
+
+            df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
+            print(f"STRATEGY_RUNNER DEBUG: Received {len(df)} klines for strategy calculation.")
+            if df.empty:
+                print(f"STRATEGY_RUNNER WARNING: No crypto data fetched for {symbol}{currency}. Retrying in 60 seconds.")
+                time.sleep(60)
+                continue
+
+            if saved_strategy_record.name == "commit_sma" and github_owner and github_repo:
+                github_commits_df = get_github_commits(github_owner, github_repo, start_dt, end_dt, {})
+                if github_commits_df.empty:
+                    print("STRATEGY_RUNNER WARNING: No GitHub commit data fetched. Strategy might not work as expected.")
+                else:
+                    github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
+                    github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
+                    github_commits_count.set_index('open_time', inplace=True)
+                    df = pd.merge(df, github_commits_count, left_index=True, right_index=True, how='left')
+                    df['commit_count'] = df['commit_count'].fillna(0)
+
+            df_with_signal = live_strategy_module.generate_signal(df.copy())
+            latest_signal_row = df_with_signal.iloc[-1]
+            latest_signal = latest_signal_row['signal']
+            print(f"STRATEGY_RUNNER DEBUG: Latest generated signal: {latest_signal}")
+            latest_close_price = latest_signal_row['close']
+            latest_open_time = df_with_signal.index[-1]
+
+            if last_processed_time is None or latest_open_time > last_processed_time:
+                print(f"STRATEGY_RUNNER: New signal generated at {latest_open_time}: {latest_signal}")
+                if latest_signal == 1:
+                    if current_holding_shares == 0:
+                        buy_price = latest_close_price * (1 + slippage)
+                        shares_to_buy = (current_capital / (buy_price * (1 + commission_rate)))
+                        if shares_to_buy > 0:
+                            commission = shares_to_buy * buy_price * commission_rate
+                            current_capital -= (shares_to_buy * buy_price + commission)
+                            current_holding_shares += shares_to_buy
+                            trade_log = TradeLog(
+                                running_strategy_id=running_strategy_id,
+                                timestamp=latest_open_time,
+                                trade_type="buy",
+                                price=buy_price,
+                                quantity=shares_to_buy,
+                                commission=commission
+                            )
+                            db.add(trade_log)
+                            db.commit()
+
+                elif latest_signal == -1:
+                    if current_holding_shares > 0:
+                        sell_price = latest_close_price * (1 - slippage)
+                        commission = current_holding_shares * sell_price * commission_rate
+                        profit_loss = (current_holding_shares * sell_price - (initial_capital - current_capital)) - commission
+                        current_capital += (current_holding_shares * sell_price - commission)
+                        trade_log = TradeLog(
+                            running_strategy_id=running_strategy_id,
+                            timestamp=latest_open_time,
+                            trade_type="sell",
+                            price=sell_price,
+                            quantity=current_holding_shares,
+                            commission=commission,
+                            profit_loss=profit_loss
+                        )
+                        db.add(trade_log)
+                        db.commit()
+                        current_holding_shares = 0
+
+                last_processed_time = latest_open_time
+
+            current_equity = current_capital + current_holding_shares * latest_close_price
+            equity_record = EquityCurve(
+                running_strategy_id=running_strategy_id,
+                timestamp=latest_open_time,
+                equity=current_equity
+            )
+            db.add(equity_record)
+            db.commit()
+
+            time.sleep(5)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Only attempt to set status to error if the record still exists and is not already stopped
+        record_for_error_update = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
+        if record_for_error_update and record_for_error_update.status != "stopped":
+            try:
+                record_for_error_update.status = "error"
+                db.commit()
+                print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) set to 'error' due to exception.")
+            except Exception as db_e:
+                print(f"STRATEGY_RUNNER ERROR: Failed to update strategy status to 'error' in DB: {db_e}")
+    finally:
+        db.close()
+
 
 @app.post("/strategies")
 async def save_strategy(request: dict, db: Session = Depends(get_db)):
@@ -99,25 +269,31 @@ async def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
     # Check if there's a running strategy associated with this saved strategy
     running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
     if running_strategy:
-        # If a running strategy exists, terminate its process first
-        if running_strategy.pid:
-            try:
-                process = psutil.Process(running_strategy.pid)
-                # Terminate the process and its children
-                for proc in process.children(recursive=True):
-                    proc.terminate()
-                process.terminate() # Terminate the parent process
-                gone, alive = psutil.wait_procs(process.children() + [process], timeout=3)
-                if alive:
-                    for p in alive:
-                        p.kill() # Force kill if not terminated
-                print(f"DEBUG: Process {running_strategy.pid} and its children terminated by delete_strategy.")
-            except psutil.NoSuchProcess:
-                print(f"DEBUG: Process {running_strategy.pid} not found, likely already terminated.")
-            except Exception as e:
-                print(f"ERROR: Error terminating process {running_strategy.pid} in delete_strategy: {e}")
+        # If a running strategy exists, set its status to stopped so the process can exit gracefully
+        if running_strategy.status != "stopped":
+            running_strategy.status = "stopped"
+            db.commit()
+            print(f"DEBUG: Set running strategy {running_strategy.id} status to 'stopped' for deletion.")
 
-        # Then delete its associated trade logs and equity curves
+        # Terminate the process if it's still running
+        if running_strategy.id in running_strategy_processes:
+            process = running_strategy_processes[running_strategy.id]
+            if process.is_alive():
+                process.terminate()
+                # Wait for the process to actually terminate
+                process.join(timeout=1) # Reduced timeout
+                if process.is_alive():
+                    print(f"WARNING: Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully, attempting kill.")
+                    os.kill(process.pid, 9) # Force kill
+                    process.join(timeout=1) # Wait again after kill
+                if process.is_alive():
+                    print(f"ERROR: Process {process.pid} for strategy {running_strategy.id} is still alive after force kill.")
+                del running_strategy_processes[running_strategy.id]
+            else:
+                print(f"DEBUG: Process for strategy {running_strategy.id} was already dead.")
+                del running_strategy_processes[running_strategy.id]
+
+        # Delete its associated trade logs and equity curves
         db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).delete()
         db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).delete()
         db.commit() # Commit deletions of related records
@@ -151,32 +327,15 @@ async def start_strategy(strategy_id: int, db: Session = Depends(get_db)):
         running_strategy.last_updated_at = datetime.now()
         db.commit()
 
-    # Start the strategy in a new process
-    # We use subprocess.Popen to detach the process from the main FastAPI process
-    # This is a simplified approach. For production, consider a proper task queue (e.g., Celery)
     try:
-        # Get the path to the Python executable in the current environment
-        python_executable = sys.executable
-        
-        # Construct the command to run strategy_runner.py
-        command = [
-            python_executable,
-            os.path.join(os.path.dirname(__file__), "strategy_runner.py"),
-            str(running_strategy.id),
-            str(saved_strategy.id)
-        ]
-        
-        # Start the subprocess
-        # Use creationflags for Windows to create a new console window (DETACHED_PROCESS)
-        # For Linux/macOS, it will run in the background by default
-        if sys.platform == "win32":
-            process = subprocess.Popen(command, creationflags=subprocess.DETACHED_PROCESS)
-        else:
-            process = subprocess.Popen(command, preexec_fn=os.setsid) # Detach for Unix-like systems
-
-        running_strategy.pid = process.pid
-        running_strategy.status = "running"
-        db.commit()
+        # Start the strategy in a separate process
+        process = multiprocessing.Process(
+            target=_run_live_strategy_process,
+            args=(running_strategy.id, saved_strategy.id)
+        )
+        process.start()
+        running_strategy_processes[running_strategy.id] = process
+        # The PID will be updated by the _run_live_strategy_process itself
         return {"message": "Strategy started successfully!", "running_strategy_id": running_strategy.id, "pid": process.pid}
     except Exception as e:
         db.rollback()
@@ -188,47 +347,33 @@ async def start_strategy(strategy_id: int, db: Session = Depends(get_db)):
 async def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
     running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == strategy_id).first()
     if not running_strategy:
-        # If the running_strategy record is not found, it means the strategy is already stopped or was never running.
-        # In this case, we can consider the stop request successful.
         return {"message": "Strategy is already stopped or was not running."}
 
     if running_strategy.status != "stopped":
         running_strategy.status = "stopped"
         db.commit()
+        print(f"DEBUG: Set running strategy {running_strategy.id} status to 'stopped'.")
 
-        if running_strategy.pid:
-            try:
-                process = psutil.Process(running_strategy.pid)
-                # Terminate the process and its children
-                for proc in process.children(recursive=True):
-                    proc.terminate()
-                process.terminate() # Terminate the parent process
-                gone, alive = psutil.wait_procs(process.children() + [process], timeout=3)
-                if alive:
-                    for p in alive:
-                        p.kill() # Force kill if not terminated
-                print(f"Process {running_strategy.pid} and its children terminated.")
-            except psutil.NoSuchProcess:
-                print(f"Process {running_strategy.pid} not found, likely already terminated.")
-            except Exception as e:
-                print(f"Error terminating process {running_strategy.pid}: {e}")
-        
+        # Terminate the process if it's still running
+        if running_strategy.id in running_strategy_processes:
+            process = running_strategy_processes[running_strategy.id]
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5) # Give it some time to terminate
+                if process.is_alive():
+                    print(f"WARNING: Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully.")
+                del running_strategy_processes[running_strategy.id]
+            else:
+                print(f"DEBUG: Process for strategy {running_strategy.id} was already dead.")
+                del running_strategy_processes[running_strategy.id]
+
         # Delete associated trade logs and equity curves first
         db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).delete()
         db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).delete()
         db.commit() # Commit deletions of related records
 
-        db.delete(running_strategy)
-        try:
-            db.commit()
-            print(f"DEBUG: Running strategy record {running_strategy.id} deleted successfully.")
-        except Exception as e:
-            db.rollback()
-            print(f"ERROR: Failed to commit deletion of running strategy record {running_strategy.id}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to delete running strategy record: {e}")
-        return {"message": "Strategy stopped and removed successfully!"}
+        return {"message": "Strategy stopped successfully!"}
     else:
-        # If status is already "stopped", return success.
         return {"message": "Strategy is already stopped."}
 
 @app.get("/strategies/{strategy_id}/status")
@@ -262,18 +407,32 @@ async def get_prices(
     currency: str = "USDT",
     interval: str = "1h",
     start_date: str = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
-    end_date: str = datetime.now().strftime("%Y-%m-%d")
+    end_date: str | None = None, # Modified: end_date can be None
+    limit: int | None = None # New: limit the number of data points
 ):
     try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
+        # Try parsing with datetime first, then date only
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+
+        # If end_date is not provided, use current datetime
+        if end_date is None:
+            end_dt = datetime.now()
+        else:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+        df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval, data_limit=limit)
         if df.empty:
             raise HTTPException(status_code=404, detail="No data found for the given parameters.")
-        
+
         # Convert DataFrame to a list of dictionaries for JSON response
         # Ensure datetime objects are converted to string
-        df.reset_index(inplace=True)
+        df.reset_index(names=['open_time'], inplace=True)
         df['open_time'] = df['open_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         return df.to_dict(orient="records")
     except ValueError as e:
@@ -311,57 +470,57 @@ async def get_strategy_code(strategy_name: str):
 async def run_strategy_backtest(
     request: dict,
 ):
+    # Directly run backtest
     symbol = request.get("symbol")
     currency = request.get("currency")
     interval = request.get("interval")
-    start_date = request.get("start_date")
-    end_date = request.get("end_date")
+    start_date_str = request.get("start_date")
+    end_date_str = request.get("end_date")
     strategy_code = request.get("strategy_code")
+    strategy_name = request.get("strategy_name")
     initial_capital = request.get("initial_capital", 10000)
     commission_rate = request.get("commission_rate", 0.001)
     slippage = request.get("slippage", 0.0005)
     risk_free_rate = request.get("risk_free_rate", 0.02)
     github_owner = request.get("github_owner")
     github_repo = request.get("github_repo")
-    strategy_name = request.get("strategy_name")
+
     try:
-        # Fetch data
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        # Try parsing with datetime first, then date only
+        try:
+            start_dt = datetime.strptime(start_date_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+
+        try:
+            end_dt = datetime.strptime(end_date_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+
         df = get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
         if df.empty:
-            raise HTTPException(status_code=404, detail="No crypto data found for the given parameters.")
+            raise ValueError("No crypto data found for the given parameters.")
 
-        # Handle GitHub commit data for commit_sma strategy
-        if strategy_name == "commit_sma" and github_owner and github_repo: # Check if strategy is commit_sma and owner/repo are provided
-            github_commits_df = get_github_commits(github_owner, github_repo, start_dt, end_dt, GITHUB_HEADERS)
-
+        if strategy_name == "commit_sma" and github_owner and github_repo:
+            github_commits_df = get_github_commits(github_owner, github_repo, start_dt, end_dt, {})
             if github_commits_df.empty:
-                raise HTTPException(status_code=404, detail="No GitHub commit data found for the given parameters. Please check owner/repo or date range.")
-            
-            # Aggregate commit count by day
-            github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
-            github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
-            github_commits_count.set_index('open_time', inplace=True)
+                print("WARNING: No GitHub commit data found for commit_sma strategy.")
+            else:
+                github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
+                github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
+                github_commits_count.set_index('open_time', inplace=True)
+                df = pd.merge(df, github_commits_count, left_index=True, right_index=True, how='left')
+                df['commit_count'] = df['commit_count'].fillna(0)
 
-            # Merge crypto data with commit data
-            df = pd.merge(df, github_commits_count, left_index=True, right_index=True, how='left')
-            df['commit_count'] = df['commit_count'].fillna(0) # Fill NaN with 0 if no commits on a day
-            print("DEBUG: DataFrame columns after merging GitHub data:", df.columns)
-            print("DEBUG: DataFrame head after merging GitHub data:\n", df.head())
-
-        # Dynamically load and execute strategy code
-        # Create a temporary module to execute the strategy code
         spec = importlib.util.spec_from_loader("temp_strategy_module", loader=None)
         temp_strategy_module = importlib.util.module_from_spec(spec)
         exec(strategy_code, temp_strategy_module.__dict__)
 
         if not hasattr(temp_strategy_module, 'generate_signal'):
-            raise HTTPException(status_code=400, detail="Strategy code must contain a 'generate_signal' function.")
-        
+            raise ValueError("Strategy code must contain a 'generate_signal' function.")
+
         df_with_signal = temp_strategy_module.generate_signal(df.copy())
 
-        # Run backtest
         results = run_backtest(
             df_with_signal,
             initial_capital,
@@ -369,21 +528,15 @@ async def run_strategy_backtest(
             slippage,
             risk_free_rate
         )
-        
-        # Convert pandas Series in 'fig' to lists for JSON serialization
+
         for key, value in results['fig'].items():
             if isinstance(value, pd.Series):
-                # Convert index to string and values to list
                 results['fig'][key] = {'index': value.index.strftime('%Y-%m-%d %H:%M:%S').tolist(), 'values': value.tolist()}
 
-        return results
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid date format or strategy parameter: {e}")
-    except HTTPException as e:
-        raise e # Re-raise HTTP exceptions
+        return {"message": "Backtest completed successfully!", "status": "SUCCESS", "result": results}
     except Exception as e:
-        # Log the full traceback for debugging
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"An error occurred during backtest: {e}")
+        raise HTTPException(status_code=500, detail=f"Backtest failed: {e}")
+
+# Removed /backtest_status/{task_id} as it's no longer needed without Celery
