@@ -1,5 +1,5 @@
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB # For storing JSON data
 from datetime import datetime
@@ -37,6 +37,8 @@ class SavedStrategy(Base):
     github_repo = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
+    running_strategy = relationship("RunningStrategy", backref="saved_strategy", uselist=False, cascade="all, delete-orphan")
+
 # Database Model for Running Strategies
 class RunningStrategy(Base):
     __tablename__ = "running_strategies"
@@ -47,6 +49,9 @@ class RunningStrategy(Base):
     status = Column(String, default="stopped") # running, paused, stopped
     started_at = Column(DateTime, default=datetime.now)
     last_updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    trade_logs = relationship("TradeLog", backref="running_strategy", cascade="all, delete-orphan")
+    equity_curves = relationship("EquityCurve", backref="running_strategy", cascade="all, delete-orphan")
 
 # Database Model for Trade Logs
 class TradeLog(Base):

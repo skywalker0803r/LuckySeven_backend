@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta
 import multiprocessing
 import time
@@ -376,32 +376,36 @@ class StrategyService:
 
     def get_strategies(self, db: Session):
         strategies = []
-        saved_strategies = db.query(SavedStrategy).all()
+        # Eager load running_strategy to avoid N+1 queries for status
+        saved_strategies = db.query(SavedStrategy).options(joinedload(SavedStrategy.running_strategy)).all()
+
         for saved_strategy in saved_strategies:
             strategy_data = saved_strategy.__dict__.copy()
             strategy_data.pop('_sa_instance_state', None) # Remove SQLAlchemy internal state
 
-            running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == saved_strategy.id).first()
+            running_strategy = saved_strategy.running_strategy # Access the eagerly loaded running_strategy
             
             trade_count = 0
             total_profit_loss = 0.0
             equity_curve_data = []
+            current_status = "stopped" # Default status
 
             if running_strategy:
+                current_status = running_strategy.status # Get status from eagerly loaded object
+                
+                # Fetch trade logs and equity curve data for the specific running_strategy
                 trade_logs = db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).all()
                 trade_count = len(trade_logs)
-                # Sum profit_loss only for 'sell' trades, as 'buy' trades don't have profit_loss
                 total_profit_loss = sum(log.profit_loss for log in trade_logs if log.trade_type == 'sell' and log.profit_loss is not None)
 
-                # Fetch equity curve data, limit to last 100 points for sparkline
                 equity_records = db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).order_by(EquityCurve.timestamp.desc()).limit(100).all()
-                # Reverse the order to be chronological for charting
                 equity_curve_data = [[record.timestamp.isoformat(), record.equity] for record in reversed(equity_records)]
             
             strategy_data['trade_count'] = trade_count
-            strategy_data['total_profit_loss'] = round(total_profit_loss, 2) # Round to 2 decimal places for display
+            strategy_data['total_profit_loss'] = round(total_profit_loss, 2)
             strategy_data['equity_curve_data'] = equity_curve_data
-            print(f"DEBUG: Equity curve data for strategy {saved_strategy.id}: {equity_curve_data[:5]}...") # Print first 5 points for brevity
+            strategy_data['status'] = current_status # Add status to the returned data
+            
             strategies.append(strategy_data)
         return strategies
 
