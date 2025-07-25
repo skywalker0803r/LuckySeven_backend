@@ -1,10 +1,4 @@
-import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import multiprocessing
 import time
@@ -33,18 +27,18 @@ class StrategyService:
         try:
             running_strategy_record = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
             if not running_strategy_record:
-                logger.error(f"STRATEGY_RUNNER ERROR: Running strategy record {running_strategy_id} not found.")
+                print(f"STRATEGY_RUNNER ERROR: Running strategy record {running_strategy_id} not found.")
                 return
 
             saved_strategy_record = db.query(SavedStrategy).filter(SavedStrategy.id == saved_strategy_id).first()
             if not saved_strategy_record:
-                logger.error(f"STRATEGY_RUNNER ERROR: Saved strategy record {saved_strategy_id} not found.")
+                print(f"STRATEGY_RUNNER ERROR: Saved strategy record {saved_strategy_id} not found.")
                 return
 
             running_strategy_record.pid = os.getpid()
             running_strategy_record.status = "running"
             db.commit()
-            logger.info(f"STRATEGY_RUNNER: Updated running_strategy {running_strategy_id} status to 'running' with PID {os.getpid()}")
+            print(f"STRATEGY_RUNNER: Updated running_strategy {running_strategy_id} status to 'running' with PID {os.getpid()}")
 
             strategy_code = saved_strategy_record.code
             symbol = saved_strategy_record.symbol
@@ -88,7 +82,7 @@ class StrategyService:
                 elif interval == '1d':
                     return end_dt - timedelta(days=lookback_periods)
                 else:
-                    logger.warning(f"Warning: Unknown interval '{interval}'. Defaulting to 365 days lookback.")
+                    print(f"Warning: Unknown interval '{interval}'. Defaulting to 365 days lookback.")
                     return end_dt - timedelta(days=365)
 
             while True:
@@ -96,28 +90,28 @@ class StrategyService:
                 current_running_strategy = db.query(RunningStrategy).filter(RunningStrategy.id == running_strategy_id).first()
 
                 if not current_running_strategy or current_running_strategy.status == "stopped":
-                    logger.info(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped or deleted. Exiting loop.")
+                    print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) stopped or deleted. Exiting loop.")
                     break
 
                 # Update the local running_strategy_record reference
                 running_strategy_record = current_running_strategy
 
-                logger.info(f"STRATEGY_RUNNER: Fetching data for {symbol}{currency} at {datetime.now()} for strategy {saved_strategy_record.name} (ID: {saved_strategy_id})...")
+                print(f"STRATEGY_RUNNER: Fetching data for {symbol}{currency} at {datetime.now()} for strategy {saved_strategy_record.name} (ID: {saved_strategy_id})...")
                 end_dt = datetime.now()
                 start_dt = calculate_start_dt(end_dt, interval, lookback_periods)
-                # logger.debug(f"STRATEGY_RUNNER DEBUG: Strategy calculation data range: start_dt={start_dt}, end_dt={end_dt}, lookback_periods={lookback_periods}")
+                print(f"STRATEGY_RUNNER DEBUG: Strategy calculation data range: start_dt={start_dt}, end_dt={end_dt}, lookback_periods={lookback_periods}")
 
                 df = self.data_service.get_crypto_prices(symbol, currency, start_dt, end_dt, interval)
-                # logger.debug(f"STRATEGY_RUNNER DEBUG: Received {len(df)} klines for strategy calculation.")
+                print(f"STRATEGY_RUNNER DEBUG: Received {len(df)} klines for strategy calculation.")
                 if df.empty:
-                    logger.warning(f"STRATEGY_RUNNER WARNING: No crypto data fetched for {symbol}{currency}. Retrying in 60 seconds.")
+                    print(f"STRATEGY_RUNNER WARNING: No crypto data fetched for {symbol}{currency}. Retrying in 60 seconds.")
                     time.sleep(60)
                     continue
 
                 if saved_strategy_record.name == "commit_sma" and github_owner and github_repo:
                     github_commits_df = self.data_service.get_github_commits(github_owner, github_repo, start_dt, end_dt, {})
                     if github_commits_df.empty:
-                        logger.warning("STRATEGY_RUNNER WARNING: No GitHub commit data fetched. Strategy might not work as expected.")
+                        print("STRATEGY_RUNNER WARNING: No GitHub commit data fetched. Strategy might not work as expected.")
                     else:
                         github_commits_count = github_commits_df.groupby(github_commits_df['date'].dt.floor('D')).size().reset_index(name='commit_count')
                         github_commits_count.rename(columns={'date': 'open_time'}, inplace=True)
@@ -128,12 +122,12 @@ class StrategyService:
                 df_with_signal = live_strategy_module.generate_signal(df.copy())
                 latest_signal_row = df_with_signal.iloc[-1]
                 latest_signal = latest_signal_row['signal']
-                # logger.debug(f"STRATEGY_RUNNER DEBUG: Latest generated signal: {latest_signal}")
+                print(f"STRATEGY_RUNNER DEBUG: Latest generated signal: {latest_signal}")
                 latest_close_price = latest_signal_row['close']
                 latest_open_time = df_with_signal.index[-1]
 
                 if last_processed_time is None or latest_open_time > last_processed_time:
-                    logger.info(f"STRATEGY_RUNNER: New signal generated at {latest_open_time}: {latest_signal}")
+                    print(f"STRATEGY_RUNNER: New signal generated at {latest_open_time}: {latest_signal}")
                     if latest_signal == 1:
                         if current_holding_shares == 0:
                             buy_price = latest_close_price * (1 + slippage)
@@ -194,9 +188,9 @@ class StrategyService:
                 try:
                     record_for_error_update.status = "error"
                     db.commit()
-                    logger.error(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) set to 'error' due to exception.")
+                    print(f"STRATEGY_RUNNER: Strategy {saved_strategy_record.name} (ID: {saved_strategy_id}) set to 'error' due to exception.")
                 except Exception as db_e:
-                    logger.error(f"STRATEGY_RUNNER ERROR: Failed to update strategy status to 'error' in DB: {db_e}")
+                    print(f"STRATEGY_RUNNER ERROR: Failed to update strategy status to 'error' in DB: {db_e}")
         finally:
             db.close()
 
@@ -238,9 +232,9 @@ class StrategyService:
                 try:
                     record_for_error_update.status = "error"
                     db.commit()
-                    logger.error(f"STRATEGY_RUNNER: Strategy {saved_strategy.name} (ID: {saved_strategy.id}) set to 'error' due to exception during start.")
+                    print(f"STRATEGY_RUNNER: Strategy {saved_strategy.name} (ID: {saved_strategy.id}) set to 'error' due to exception during start.")
                 except Exception as db_e:
-                    logger.error(f"STRATEGY_RUNNER ERROR: Failed to update strategy status to 'error' in DB: {db_e}")
+                    print(f"STRATEGY_RUNNER ERROR: Failed to update strategy status to 'error' in DB: {db_e}")
             raise HTTPException(status_code=500, detail=f"Failed to start strategy process: {e}")
 
     def stop_strategy(self, strategy_id: int, db: Session):
@@ -251,7 +245,7 @@ class StrategyService:
         if running_strategy.status != "stopped":
             running_strategy.status = "stopped"
             db.commit()
-            logger.info(f"Set running strategy {running_strategy.id} status to 'stopped'.")
+            print(f"DEBUG: Set running strategy {running_strategy.id} status to 'stopped'.")
 
             # Terminate the process if it's still running
             if running_strategy.id in self.running_strategy_processes:
@@ -260,10 +254,10 @@ class StrategyService:
                     process.terminate()
                     process.join(timeout=5) # Give it some time to terminate
                     if process.is_alive():
-                        logger.warning(f"Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully.")
+                        print(f"WARNING: Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully.")
                     del self.running_strategy_processes[running_strategy.id]
                 else:
-                    logger.info(f"Process for strategy {running_strategy.id} was already dead.")
+                    print(f"DEBUG: Process for strategy {running_strategy.id} was already dead.")
                     del self.running_strategy_processes[running_strategy.id]
 
             # Delete associated trade logs and equity curves first
@@ -286,7 +280,7 @@ class StrategyService:
             if running_strategy.status != "stopped":
                 running_strategy.status = "stopped"
                 db.commit()
-                logger.info(f"Set running strategy {running_strategy.id} status to 'stopped' for deletion.")
+                print(f"DEBUG: Set running strategy {running_strategy.id} status to 'stopped' for deletion.")
 
             # Terminate the process if it's still running
             if running_strategy.id in self.running_strategy_processes:
@@ -296,14 +290,14 @@ class StrategyService:
                     # Wait for the process to actually terminate
                     process.join(timeout=1) # Reduced timeout
                     if process.is_alive():
-                        logger.warning(f"Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully, attempting kill.")
+                        print(f"WARNING: Process {process.pid} for strategy {running_strategy.id} did not terminate gracefully, attempting kill.")
                         os.kill(process.pid, 9) # Force kill
                         process.join(timeout=1) # Wait again after kill
                     if process.is_alive():
-                        logger.error(f"Process {process.pid} for strategy {running_strategy.id} is still alive after force kill.")
+                        print(f"ERROR: Process {process.pid} for strategy {running_strategy.id} is still alive after force kill.")
                     del self.running_strategy_processes[running_strategy.id]
                 else:
-                    logger.info(f"Process for strategy {running_strategy.id} was already dead.")
+                    print(f"DEBUG: Process for strategy {running_strategy.id} was already dead.")
                     del self.running_strategy_processes[running_strategy.id]
 
             # Delete its associated trade logs and equity curves
@@ -313,7 +307,7 @@ class StrategyService:
             # Then delete the running strategy itself
             db.delete(running_strategy)
             db.commit() # Commit the deletion of running_strategy before deleting saved_strategy
-            logger.info(f"Associated running strategy {running_strategy.id} and its logs/curves deleted.")
+            print(f"DEBUG: Associated running strategy {running_strategy.id} and its logs/curves deleted.")
 
         db.delete(strategy)
         db.commit()
@@ -381,43 +375,34 @@ class StrategyService:
         return {"message": "Strategy saved successfully!", "strategy_id": new_strategy.id}
 
     def get_strategies(self, db: Session):
-        strategies_data = []
-        # Eager load running_strategy, and its related trade_logs and equity_curves
-        saved_strategies = db.query(SavedStrategy).options(
-            joinedload(SavedStrategy.running_strategy).joinedload(RunningStrategy.trade_logs),
-            joinedload(SavedStrategy.running_strategy).joinedload(RunningStrategy.equity_curves)
-        ).all()
-
+        strategies = []
+        saved_strategies = db.query(SavedStrategy).all()
         for saved_strategy in saved_strategies:
             strategy_data = saved_strategy.__dict__.copy()
             strategy_data.pop('_sa_instance_state', None) # Remove SQLAlchemy internal state
 
-            running_strategy = saved_strategy.running_strategy # Access the eagerly loaded running_strategy
+            running_strategy = db.query(RunningStrategy).filter(RunningStrategy.strategy_id == saved_strategy.id).first()
             
             trade_count = 0
             total_profit_loss = 0.0
             equity_curve_data = []
-            current_status = "stopped" # Default status
 
             if running_strategy:
-                current_status = running_strategy.status # Get status from eagerly loaded object
-                
-                # Access eagerly loaded trade logs and equity curves
-                trade_logs = running_strategy.trade_logs
+                trade_logs = db.query(TradeLog).filter(TradeLog.running_strategy_id == running_strategy.id).all()
                 trade_count = len(trade_logs)
+                # Sum profit_loss only for 'sell' trades, as 'buy' trades don't have profit_loss
                 total_profit_loss = sum(log.profit_loss for log in trade_logs if log.trade_type == 'sell' and log.profit_loss is not None)
 
-                # Limit equity curve data to last 100 points for sparkline
-                # Ensure chronological order
-                equity_records = sorted(running_strategy.equity_curves, key=lambda x: x.timestamp, reverse=False)[-100:] # Changed to reverse=False and slice from end
-                equity_curve_data = [[record.timestamp.isoformat(), record.equity] for record in equity_records]
+                # Fetch equity curve data, limit to last 100 points for sparkline
+                equity_records = db.query(EquityCurve).filter(EquityCurve.running_strategy_id == running_strategy.id).order_by(EquityCurve.timestamp.desc()).limit(100).all()
+                # Reverse the order to be chronological for charting
+                equity_curve_data = [[record.timestamp.isoformat(), record.equity] for record in reversed(equity_records)]
             
             strategy_data['trade_count'] = trade_count
             strategy_data['total_profit_loss'] = round(total_profit_loss, 2) # Round to 2 decimal places for display
             strategy_data['equity_curve_data'] = equity_curve_data
-            strategy_data['status'] = current_status # Add status to the returned data
-            
-            strategies_data.append(strategy_data)
-        return strategies_data
+            print(f"DEBUG: Equity curve data for strategy {saved_strategy.id}: {equity_curve_data[:5]}...") # Print first 5 points for brevity
+            strategies.append(strategy_data)
+        return strategies
 
 strategy_service = StrategyService()

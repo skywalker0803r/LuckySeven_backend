@@ -48,8 +48,8 @@
     *   **響應**：`{"message": "Strategy saved successfully!", "strategy_id": new_strategy.id}` 或錯誤詳細信息。
 
 *   **`GET /strategies`**
-    *   **描述**：檢索所有已保存交易策略的列表，並包含其當前運行狀態、交易數量、總盈虧和權益曲線數據（用於儀表板概覽）。
-    *   **響應**：已保存策略對象的列表，每個對象包含 `status`、`trade_count`、`total_profit_loss` 和 `equity_curve_data` 等字段。
+    *   **描述**：檢索所有已保存交易策略的列表。
+    *   **響應**：已保存策略對象的列表。
 
 *   **`DELETE /strategies/{strategy_id}`**
     *   **描述**：根據 ID 刪除已保存的交易策略。如果策略當前正在運行，它將被停止，並且其相關的日誌/曲線將首先被刪除。
@@ -67,17 +67,17 @@
     *   **響應**：`{"message": "Strategy stopped and removed successfully!"}` 或 `{"message": "Strategy is already stopped or was not running."}` 或錯誤詳細信息。
 
 *   **`GET /strategies/{strategy_id}/status`**
-    *   **描述**：檢索運行中策略的當前狀態。**注意：對於儀表板概覽，建議使用 `GET /strategies` 端點以獲取更全面的信息。**
+    *   **描述**：檢索運行中策略的當前狀態。
     *   **參數**：`strategy_id`（路徑參數，整數）。
     *   **響應**：`{"status": "running"|"stopped"|"error", "pid": pid, "started_at": datetime, "last_updated_at": datetime}`。
 
 *   **`GET /strategies/{strategy_id}/trade_logs`**
-    *   **描述**：檢索特定運行策略的交易日誌。**注意：對於儀表板概覽，交易數量已包含在 `GET /strategies` 端點的響應中。**
+    *   **描述**：檢索特定運行策略的交易日誌。
     *   **參數**：`strategy_id`（路徑參數，整數）。
     *   **響應**：交易日誌對象的列表。
 
 *   **`GET /strategies/{strategy_id}/equity_curve`**
-    *   **描述**：檢索特定運行策略的權益曲線數據。**注意：對於儀表板概覽，簡化的權益曲線數據已包含在 `GET /strategies` 端點的響應中。**
+    *   **描述**：檢索特定運行策略的權益曲線數據。
     *   **參數**：`strategy_id`（路徑參數，整數）。
     *   **響應**：權益曲線數據點的列表。
 
